@@ -146,6 +146,21 @@ impl<VM: VMBinding> WorkBucket<VM> {
     }
 }
 
+pub struct SingleThreadedWorkBucket<VM: VMBinding> {
+    /// Whether a worker is currently doing a work from this bucket.
+    busy: AtomicBool,
+    work_bucket: WorkBucket<VM>,
+}
+
+impl<VM: VMBinding> SingleThreadedWorkBucket<VM> {
+    pub fn new(active: bool, monitor: Arc<(Mutex<()>, Condvar)>) -> Self {
+        SingleThreadedWorkBucket {
+            busy: AtomicBool::new(false),
+            work_bucket: WorkBucket::new(active, monitor),
+        }
+    }
+}
+
 #[derive(Debug, Enum, Copy, Clone, Eq, PartialEq)]
 pub enum WorkBucketStage {
     Unconstrained,

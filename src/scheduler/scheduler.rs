@@ -19,6 +19,8 @@ pub enum CoordinatorMessage<VM: VMBinding> {
 
 pub struct GCWorkScheduler<VM: VMBinding> {
     pub work_buckets: EnumMap<WorkBucketStage, WorkBucket<VM>>,
+    // TODO Support multiple buckets of one stage.
+    pub single_threaded_work_buckets: EnumMap<WorkBucketStage, SingleThreadedWorkBucket<VM>>,
     /// Work for the coordinator thread
     pub coordinator_work: WorkBucket<VM>,
     /// workers
@@ -65,6 +67,15 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone()),
                 WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone()),
                 WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone()),
+            },
+            single_threaded_work_buckets: enum_map! {
+                WorkBucketStage::Unconstrained => SingleThreadedWorkBucket::new(true, worker_monitor.clone()),
+                WorkBucketStage::Prepare => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::Closure => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::RefClosure => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::RefForwarding => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::Release => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::Final => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
             },
             coordinator_work: WorkBucket::new(true, worker_monitor.clone()),
             worker_group: None,
