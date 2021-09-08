@@ -130,21 +130,31 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
             let mut open_stages: Vec<WorkBucketStage> = vec![Unconstrained, Prepare];
             // The rest will open after the previous stage is done.
             let mut open_next = |s: WorkBucketStage| {
-                let cur_stages = open_stages.clone();
-                self_mut.work_buckets[s].set_open_condition(move || {
-                    let should_open =
-                        self.are_buckets_drained(&cur_stages) && self.worker_group().all_parked();
-                    // Additional check before the `RefClosure` bucket opens.
-                    if should_open && s == WorkBucketStage::RefClosure {
-                        if let Some(closure_end) = self.closure_end.lock().unwrap().as_ref() {
-                            if closure_end() {
-                                // Don't open `RefClosure` if `closure_end` added more works to `Closure`.
-                                return false;
+                [
+                    &mut self_mut.work_buckets[s],
+                    &mut self_mut.single_threaded_work_buckets[s].work_bucket,
+                ]
+                .iter_mut()
+                .map(|work_bucket| {
+                    let cur_stages = open_stages.clone();
+                    let scheduler = self.clone();
+                    work_bucket.set_open_condition(move || {
+                        let should_open = scheduler.are_buckets_drained(&cur_stages)
+                            && self.worker_group().all_parked();
+                        // Additional check before the `RefClosure` bucket opens.
+                        if should_open && s == WorkBucketStage::RefClosure {
+                            if let Some(closure_end) = self.closure_end.lock().unwrap().as_ref() {
+                                if closure_end() {
+                                    // Don't open `RefClosure` if `closure_end` added more works to `Closure`.
+                                    return false;
+                                }
                             }
                         }
-                    }
-                    should_open
-                });
+                        should_open
+                    });
+                })
+                .for_each(drop);
+
                 open_stages.push(s);
             };
 

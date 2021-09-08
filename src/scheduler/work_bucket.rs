@@ -149,7 +149,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
 pub struct SingleThreadedWorkBucket<VM: VMBinding> {
     /// Whether a worker is currently doing a work from this bucket.
     busy: AtomicBool,
-    work_bucket: WorkBucket<VM>,
+    pub work_bucket: WorkBucket<VM>,
 }
 
 impl<VM: VMBinding> SingleThreadedWorkBucket<VM> {
