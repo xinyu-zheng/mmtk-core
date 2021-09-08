@@ -167,7 +167,12 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
     }
 
     fn are_buckets_drained(&self, buckets: &[WorkBucketStage]) -> bool {
-        buckets.iter().all(|&b| self.work_buckets[b].is_drained())
+        buckets.iter().all(|&b| {
+            self.work_buckets[b].is_drained()
+                && self.single_threaded_work_buckets[b]
+                    .work_bucket
+                    .is_drained()
+        })
     }
 
     pub fn initialize_worker(self: &Arc<Self>, tls: VMWorkerThread) {
@@ -193,12 +198,27 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
 
     fn all_buckets_empty(&self) -> bool {
         self.work_buckets.values().all(|bucket| bucket.is_empty())
+            && self
+                .single_threaded_work_buckets
+                .values()
+                .map(|single_threaded_work_bucket| &single_threaded_work_bucket.work_bucket)
+                .all(|bucket| bucket.is_empty())
     }
 
     /// Open buckets if their conditions are met
     fn update_buckets(&self) {
         let mut buckets_updated = false;
         for (id, bucket) in self.work_buckets.iter() {
+            if id == WorkBucketStage::Unconstrained {
+                continue;
+            }
+            buckets_updated |= bucket.update();
+        }
+        for (id, bucket) in self
+            .single_threaded_work_buckets
+            .iter()
+            .map(|(id, single_threaded_work_bucket)| (id, &single_threaded_work_bucket.work_bucket))
+        {
             if id == WorkBucketStage::Unconstrained {
                 continue;
             }
@@ -259,6 +279,29 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         debug_assert!(!self.work_buckets[WorkBucketStage::RefForwarding].is_activated());
         debug_assert!(!self.work_buckets[WorkBucketStage::Release].is_activated());
         debug_assert!(!self.work_buckets[WorkBucketStage::Final].is_activated());
+
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare]
+            .work_bucket
+            .is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Closure]
+            .work_bucket
+            .is_activated());
+        debug_assert!(
+            !self.single_threaded_work_buckets[WorkBucketStage::RefClosure]
+                .work_bucket
+                .is_activated()
+        );
+        debug_assert!(
+            !self.single_threaded_work_buckets[WorkBucketStage::RefForwarding]
+                .work_bucket
+                .is_activated()
+        );
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Release]
+            .work_bucket
+            .is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Final]
+            .work_bucket
+            .is_activated());
     }
 
     pub fn deactivate_all(&self) {
@@ -268,6 +311,25 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         self.work_buckets[WorkBucketStage::RefForwarding].deactivate();
         self.work_buckets[WorkBucketStage::Release].deactivate();
         self.work_buckets[WorkBucketStage::Final].deactivate();
+
+        self.single_threaded_work_buckets[WorkBucketStage::Prepare]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Closure]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefClosure]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefForwarding]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Release]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Final]
+            .work_bucket
+            .deactivate();
     }
 
     pub fn reset_state(&self) {
@@ -277,6 +339,22 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         self.work_buckets[WorkBucketStage::RefForwarding].deactivate();
         self.work_buckets[WorkBucketStage::Release].deactivate();
         self.work_buckets[WorkBucketStage::Final].deactivate();
+
+        self.single_threaded_work_buckets[WorkBucketStage::Closure]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefClosure]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefForwarding]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Release]
+            .work_bucket
+            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Final]
+            .work_bucket
+            .deactivate();
     }
 
     pub fn add_coordinator_work(&self, work: impl CoordinatorWork<VM>, worker: &GCWorker<VM>) {
@@ -292,6 +370,15 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
             return Some((work, worker.local_work_bucket.is_empty()));
         }
         for work_bucket in self.work_buckets.values() {
+            if let Some(work) = work_bucket.poll() {
+                return Some((work, work_bucket.is_empty()));
+            }
+        }
+        for work_bucket in self
+            .single_threaded_work_buckets
+            .values()
+            .map(|single_threaded_work_bucket| &single_threaded_work_bucket.work_bucket)
+        {
             if let Some(work) = work_bucket.poll() {
                 return Some((work, work_bucket.is_empty()));
             }
@@ -367,6 +454,9 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
     pub fn notify_mutators_paused(&self, mmtk: &'static MMTK<VM>) {
         mmtk.plan.base().control_collector_context.clear_request();
         debug_assert!(!self.work_buckets[WorkBucketStage::Prepare].is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare]
+            .work_bucket
+            .is_activated());
         self.work_buckets[WorkBucketStage::Prepare].activate();
         let _guard = self.worker_monitor.0.lock().unwrap();
         self.worker_monitor.1.notify_all();
