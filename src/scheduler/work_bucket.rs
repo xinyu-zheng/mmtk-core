@@ -129,11 +129,21 @@ impl<VM: VMBinding> WorkBucket<VM> {
     pub fn bulk_add(&self, work_vec: Vec<Box<dyn GCWork<VM>>>) {
         self.bulk_add_with_priority(1000, work_vec)
     }
+    pub fn is_single_threaded(&self) -> bool {
+        self.is_single_threaded
+    }
+    pub fn busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
     /// Get a work packet (with the greatest priority) from this bucket
     pub fn poll(&self) -> Option<Box<dyn GCWork<VM>>> {
         if !self.active.load(Ordering::SeqCst) {
             return None;
         }
+        if self.is_single_threaded() && self.busy() {
+            return None;
+        }
+        // TODO Make sure busy is set properly somewhere. Should it immediately be set here?
         self.queue.write().pop().map(|v| v.work)
     }
     pub fn set_open_condition(&mut self, pred: impl Fn() -> bool + Send + 'static) {
