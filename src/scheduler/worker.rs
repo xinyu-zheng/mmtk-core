@@ -83,7 +83,8 @@ impl<VM: VMBinding> GCWorker<VM> {
             ordinal,
             parked: AtomicBool::new(true),
             local: GCWorkerLocalPtr::UNINITIALIZED,
-            local_work_bucket: WorkBucket::new(true, scheduler.worker_monitor.clone()),
+            // TODO Determine whether this can/should be single-threaded.
+            local_work_bucket: WorkBucket::new(true, scheduler.worker_monitor.clone(), false),
             sender,
             scheduler,
             stat: Default::default(),

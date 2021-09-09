@@ -60,16 +60,20 @@ pub struct WorkBucket<VM: VMBinding> {
     queue: RwLock<BinaryHeap<PrioritizedWork<VM>>>,
     monitor: Arc<(Mutex<()>, Condvar)>,
     can_open: Option<Box<dyn (Fn() -> bool) + Send>>,
+    is_single_threaded: bool,
+    busy: AtomicBool,
 }
 
 impl<VM: VMBinding> WorkBucket<VM> {
     pub const DEFAULT_PRIORITY: usize = 1000;
-    pub fn new(active: bool, monitor: Arc<(Mutex<()>, Condvar)>) -> Self {
+    pub fn new(active: bool, monitor: Arc<(Mutex<()>, Condvar)>, is_single_threaded: bool) -> Self {
         Self {
             active: AtomicBool::new(active),
             queue: Default::default(),
             monitor,
             can_open: None,
+            is_single_threaded,
+            busy: AtomicBool::new(false),
         }
     }
     fn notify_one_worker(&self) {
@@ -143,21 +147,6 @@ impl<VM: VMBinding> WorkBucket<VM> {
             }
         }
         false
-    }
-}
-
-pub struct SingleThreadedWorkBucket<VM: VMBinding> {
-    /// Whether a worker is currently doing a work from this bucket.
-    busy: AtomicBool,
-    pub work_bucket: WorkBucket<VM>,
-}
-
-impl<VM: VMBinding> SingleThreadedWorkBucket<VM> {
-    pub fn new(active: bool, monitor: Arc<(Mutex<()>, Condvar)>) -> Self {
-        SingleThreadedWorkBucket {
-            busy: AtomicBool::new(false),
-            work_bucket: WorkBucket::new(active, monitor),
-        }
     }
 }
 

@@ -20,7 +20,7 @@ pub enum CoordinatorMessage<VM: VMBinding> {
 pub struct GCWorkScheduler<VM: VMBinding> {
     pub work_buckets: EnumMap<WorkBucketStage, WorkBucket<VM>>,
     // TODO Support multiple buckets of one stage.
-    pub single_threaded_work_buckets: EnumMap<WorkBucketStage, SingleThreadedWorkBucket<VM>>,
+    pub single_threaded_work_buckets: EnumMap<WorkBucketStage, WorkBucket<VM>>,
     /// Work for the coordinator thread
     pub coordinator_work: WorkBucket<VM>,
     /// workers
@@ -60,24 +60,24 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         let worker_monitor: Arc<(Mutex<()>, Condvar)> = Default::default();
         Arc::new(Self {
             work_buckets: enum_map! {
-                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone()),
-                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone(), false),
+                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone(), false),
+                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone(), false),
+                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone(), false),
+                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone(), false),
+                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), false),
+                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), false),
             },
             single_threaded_work_buckets: enum_map! {
-                WorkBucketStage::Unconstrained => SingleThreadedWorkBucket::new(true, worker_monitor.clone()),
-                WorkBucketStage::Prepare => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::Closure => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::RefClosure => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::RefForwarding => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::Release => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
-                WorkBucketStage::Final => SingleThreadedWorkBucket::new(false, worker_monitor.clone()),
+                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone(), true),
+                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone(), true),
+                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone(), true),
+                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone(), true),
+                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone(), true),
+                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), true),
+                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), true),
             },
-            coordinator_work: WorkBucket::new(true, worker_monitor.clone()),
+            coordinator_work: WorkBucket::new(true, worker_monitor.clone(), false),
             worker_group: None,
             worker_monitor,
             mmtk: None,
@@ -132,7 +132,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
             let mut open_next = |s: WorkBucketStage| {
                 [
                     &mut self_mut.work_buckets[s],
-                    &mut self_mut.single_threaded_work_buckets[s].work_bucket,
+                    &mut self_mut.single_threaded_work_buckets[s],
                 ]
                 .iter_mut()
                 .map(|work_bucket| {
@@ -168,10 +168,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
 
     fn are_buckets_drained(&self, buckets: &[WorkBucketStage]) -> bool {
         buckets.iter().all(|&b| {
-            self.work_buckets[b].is_drained()
-                && self.single_threaded_work_buckets[b]
-                    .work_bucket
-                    .is_drained()
+            self.work_buckets[b].is_drained() && self.single_threaded_work_buckets[b].is_drained()
         })
     }
 
@@ -201,7 +198,6 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
             && self
                 .single_threaded_work_buckets
                 .values()
-                .map(|single_threaded_work_bucket| &single_threaded_work_bucket.work_bucket)
                 .all(|bucket| bucket.is_empty())
     }
 
@@ -214,11 +210,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
             }
             buckets_updated |= bucket.update();
         }
-        for (id, bucket) in self
-            .single_threaded_work_buckets
-            .iter()
-            .map(|(id, single_threaded_work_bucket)| (id, &single_threaded_work_bucket.work_bucket))
-        {
+        for (id, bucket) in self.single_threaded_work_buckets.iter() {
             if id == WorkBucketStage::Unconstrained {
                 continue;
             }
@@ -280,28 +272,16 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         debug_assert!(!self.work_buckets[WorkBucketStage::Release].is_activated());
         debug_assert!(!self.work_buckets[WorkBucketStage::Final].is_activated());
 
-        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare]
-            .work_bucket
-            .is_activated());
-        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Closure]
-            .work_bucket
-            .is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare].is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Closure].is_activated());
         debug_assert!(
-            !self.single_threaded_work_buckets[WorkBucketStage::RefClosure]
-                .work_bucket
-                .is_activated()
+            !self.single_threaded_work_buckets[WorkBucketStage::RefClosure].is_activated()
         );
         debug_assert!(
-            !self.single_threaded_work_buckets[WorkBucketStage::RefForwarding]
-                .work_bucket
-                .is_activated()
+            !self.single_threaded_work_buckets[WorkBucketStage::RefForwarding].is_activated()
         );
-        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Release]
-            .work_bucket
-            .is_activated());
-        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Final]
-            .work_bucket
-            .is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Release].is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Final].is_activated());
     }
 
     pub fn deactivate_all(&self) {
@@ -312,24 +292,12 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         self.work_buckets[WorkBucketStage::Release].deactivate();
         self.work_buckets[WorkBucketStage::Final].deactivate();
 
-        self.single_threaded_work_buckets[WorkBucketStage::Prepare]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::Closure]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::RefClosure]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::RefForwarding]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::Release]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::Final]
-            .work_bucket
-            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Prepare].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Closure].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefClosure].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefForwarding].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Release].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Final].deactivate();
     }
 
     pub fn reset_state(&self) {
@@ -340,21 +308,11 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         self.work_buckets[WorkBucketStage::Release].deactivate();
         self.work_buckets[WorkBucketStage::Final].deactivate();
 
-        self.single_threaded_work_buckets[WorkBucketStage::Closure]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::RefClosure]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::RefForwarding]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::Release]
-            .work_bucket
-            .deactivate();
-        self.single_threaded_work_buckets[WorkBucketStage::Final]
-            .work_bucket
-            .deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Closure].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefClosure].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::RefForwarding].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Release].deactivate();
+        self.single_threaded_work_buckets[WorkBucketStage::Final].deactivate();
     }
 
     pub fn add_coordinator_work(&self, work: impl CoordinatorWork<VM>, worker: &GCWorker<VM>) {
@@ -374,11 +332,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 return Some((work, work_bucket.is_empty()));
             }
         }
-        for work_bucket in self
-            .single_threaded_work_buckets
-            .values()
-            .map(|single_threaded_work_bucket| &single_threaded_work_bucket.work_bucket)
-        {
+        for work_bucket in self.single_threaded_work_buckets.values() {
             if let Some(work) = work_bucket.poll() {
                 return Some((work, work_bucket.is_empty()));
             }
@@ -454,9 +408,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
     pub fn notify_mutators_paused(&self, mmtk: &'static MMTK<VM>) {
         mmtk.plan.base().control_collector_context.clear_request();
         debug_assert!(!self.work_buckets[WorkBucketStage::Prepare].is_activated());
-        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare]
-            .work_bucket
-            .is_activated());
+        debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare].is_activated());
         self.work_buckets[WorkBucketStage::Prepare].activate();
         let _guard = self.worker_monitor.0.lock().unwrap();
         self.worker_monitor.1.notify_all();
