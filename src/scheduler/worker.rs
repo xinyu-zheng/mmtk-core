@@ -83,7 +83,7 @@ impl<VM: VMBinding> GCWorker<VM> {
             ordinal,
             parked: AtomicBool::new(true),
             local: GCWorkerLocalPtr::UNINITIALIZED,
-            // TODO Determine whether this can/should be single-threaded.
+            // Single-threaded works don't use it so can be unsingle-threaded.
             local_work_bucket: WorkBucket::new(true, scheduler.worker_monitor.clone(), false),
             sender,
             scheduler,
@@ -92,6 +92,14 @@ impl<VM: VMBinding> GCWorker<VM> {
             is_coordinator,
             local_work_buffer: Vec::with_capacity(LOCALLY_CACHED_WORKS),
         }
+    }
+
+    #[inline]
+    pub fn add_single_threaded_work(&mut self, bucket: WorkBucketStage, work: impl GCWork<VM>) {
+        // Single-threaded work should always be added to the global buckets
+        // to avoid multiple workers working on works from a same bucket because the single-threaded property
+        // is only maintained by the bucket through giving away one work at a time.
+        self.scheduler.single_threaded_work_buckets[bucket].add_with_priority(1000, box work);
     }
 
     #[inline]
