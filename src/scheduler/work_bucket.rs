@@ -61,12 +61,18 @@ pub struct WorkBucket<VM: VMBinding> {
     monitor: Arc<(Mutex<()>, Condvar)>,
     can_open: Option<Box<dyn (Fn() -> bool) + Send>>,
     is_single_threaded: bool,
+    stage: WorkBucketStage,
     busy: AtomicBool,
 }
 
 impl<VM: VMBinding> WorkBucket<VM> {
     pub const DEFAULT_PRIORITY: usize = 1000;
-    pub fn new(active: bool, monitor: Arc<(Mutex<()>, Condvar)>, is_single_threaded: bool) -> Self {
+    pub fn new(
+        active: bool,
+        monitor: Arc<(Mutex<()>, Condvar)>,
+        is_single_threaded: bool,
+        stage: WorkBucketStage,
+    ) -> Self {
         Self {
             active: AtomicBool::new(active),
             queue: Default::default(),
@@ -74,6 +80,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
             can_open: None,
             is_single_threaded,
             busy: AtomicBool::new(false),
+            stage,
         }
     }
     fn notify_one_worker(&self) {
@@ -135,16 +142,31 @@ impl<VM: VMBinding> WorkBucket<VM> {
     pub fn busy(&self) -> bool {
         self.busy.load(Ordering::SeqCst)
     }
+    pub fn be_busy(&self) {
+        self.busy.store(true, Ordering::SeqCst);
+    }
+    pub fn be_idle(&self) {
+        self.busy.store(false, Ordering::SeqCst);
+    }
     /// Get a work packet (with the greatest priority) from this bucket
     pub fn poll(&self) -> Option<Box<dyn GCWork<VM>>> {
+        debug_assert!(!self.is_single_threaded());
         if !self.active.load(Ordering::SeqCst) {
             return None;
         }
-        if self.is_single_threaded() && self.busy() {
-            return None;
-        }
-        // TODO Make sure busy is set properly somewhere. Should it immediately be set here?
         self.queue.write().pop().map(|v| v.work)
+    }
+    pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, WorkBucketStage)> {
+        debug_assert!(self.is_single_threaded());
+        if let Ok(_) = self
+            .busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            debug_assert!(self.busy());
+            self.queue.write().pop().map(|v| (v.work, self.stage()))
+        } else {
+            None
+        }
     }
     pub fn set_open_condition(&mut self, pred: impl Fn() -> bool + Send + 'static) {
         self.can_open = Some(box pred);
@@ -157,6 +179,9 @@ impl<VM: VMBinding> WorkBucket<VM> {
             }
         }
         false
+    }
+    pub fn stage(&self) -> WorkBucketStage {
+        self.stage
     }
 }
 

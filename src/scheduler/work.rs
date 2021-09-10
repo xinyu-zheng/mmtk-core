@@ -1,4 +1,4 @@
-use super::worker::*;
+use super::{worker::*, WorkBucketStage};
 use crate::mmtk::MMTK;
 use crate::vm::VMBinding;
 use std::any::{type_name, TypeId};
@@ -12,6 +12,16 @@ pub trait CoordinatorWork<VM: VMBinding>: 'static + Send + GCWork<VM> {}
 
 pub trait GCWork<VM: VMBinding>: 'static + Send {
     fn do_work(&mut self, worker: &mut GCWorker<VM>, mmtk: &'static MMTK<VM>);
+    fn do_single_threaded_work(
+        &mut self,
+        worker: &mut GCWorker<VM>,
+        stage: WorkBucketStage,
+        mmtk: &'static MMTK<VM>,
+    ) {
+        self.do_work(worker, mmtk);
+        let bucket = &worker.scheduler().single_threaded_work_buckets[stage];
+        bucket.be_idle();
+    }
     #[inline]
     fn do_work_with_stat(&mut self, worker: &mut GCWorker<VM>, mmtk: &'static MMTK<VM>) {
         let stat = worker
@@ -19,5 +29,17 @@ pub trait GCWork<VM: VMBinding>: 'static + Send {
             .measure_work(TypeId::of::<Self>(), type_name::<Self>(), mmtk);
         self.do_work(worker, mmtk);
         stat.end_of_work(&mut worker.stat);
+    }
+    #[inline]
+    fn do_single_threaded_work_with_stat(
+        &mut self,
+        worker: &mut GCWorker<VM>,
+        stage: WorkBucketStage,
+        mmtk: &'static MMTK<VM>,
+    ) {
+        debug_assert!(worker.scheduler().single_threaded_work_buckets[stage].busy());
+        self.do_work_with_stat(worker, mmtk);
+        let bucket = &worker.scheduler().single_threaded_work_buckets[stage];
+        bucket.be_idle();
     }
 }

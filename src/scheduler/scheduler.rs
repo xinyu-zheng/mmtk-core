@@ -60,24 +60,29 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         let worker_monitor: Arc<(Mutex<()>, Condvar)> = Default::default();
         Arc::new(Self {
             work_buckets: enum_map! {
-                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone(), false),
-                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone(), false),
-                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone(), false),
-                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone(), false),
-                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone(), false),
-                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), false),
-                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), false),
+                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone(), false, WorkBucketStage::Unconstrained),
+                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::Prepare),
+                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::Closure),
+                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::RefClosure),
+                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::RefForwarding),
+                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::Release),
+                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::Final),
             },
             single_threaded_work_buckets: enum_map! {
-                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone(), true),
-                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone(), true),
-                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone(), true),
-                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone(), true),
-                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone(), true),
-                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), true),
-                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), true),
+                WorkBucketStage::Unconstrained => WorkBucket::new(true, worker_monitor.clone(), true, WorkBucketStage::Unconstrained),
+                WorkBucketStage::Prepare => WorkBucket::new(false, worker_monitor.clone(), true, WorkBucketStage::Prepare),
+                WorkBucketStage::Closure => WorkBucket::new(false, worker_monitor.clone(), true, WorkBucketStage::Closure),
+                WorkBucketStage::RefClosure => WorkBucket::new(false, worker_monitor.clone(), true, WorkBucketStage::RefClosure),
+                WorkBucketStage::RefForwarding => WorkBucket::new(false, worker_monitor.clone(), true, WorkBucketStage::RefForwarding),
+                WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), true, WorkBucketStage::Release),
+                WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), true, WorkBucketStage::Final),
             },
-            coordinator_work: WorkBucket::new(true, worker_monitor.clone(), false),
+            coordinator_work: WorkBucket::new(
+                true,
+                worker_monitor.clone(),
+                false,
+                WorkBucketStage::Unconstrained,
+            ),
             worker_group: None,
             worker_monitor,
             mmtk: None,
@@ -323,54 +328,56 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
     }
 
     #[inline]
-    fn pop_scheduable_work(&self, worker: &GCWorker<VM>) -> Option<(Box<dyn GCWork<VM>>, bool)> {
+    fn pop_scheduable_work(
+        &self,
+        worker: &GCWorker<VM>,
+    ) -> Option<(Box<dyn GCWork<VM>>, bool, Option<WorkBucketStage>)> {
         if let Some(work) = worker.local_work_bucket.poll() {
-            return Some((work, worker.local_work_bucket.is_empty()));
+            return Some((work, worker.local_work_bucket.is_empty(), None));
         }
         for work_bucket in self.work_buckets.values() {
             if let Some(work) = work_bucket.poll() {
-                return Some((work, work_bucket.is_empty()));
+                return Some((work, work_bucket.is_empty(), None));
             }
         }
-        for work_bucket in self.single_threaded_work_buckets.values() {
-            if let Some(work) = work_bucket.poll() {
-                return Some((work, work_bucket.is_empty()));
+        for single_threaded_work_bucket in self.single_threaded_work_buckets.values() {
+            if let Some((work, stage)) = single_threaded_work_bucket.poll_single_threaded() {
+                return Some((work, single_threaded_work_bucket.is_empty(), Some(stage)));
             }
         }
         None
     }
 
-    /// Get a scheduable work. Called by workers
+    /// Get a scheduable work (with its stage if it's single-threaded). Called by workers
     #[inline]
-    pub fn poll(&self, worker: &GCWorker<VM>) -> Box<dyn GCWork<VM>> {
-        let work = if let Some((work, bucket_is_empty)) = self.pop_scheduable_work(worker) {
+    pub fn poll(&self, worker: &GCWorker<VM>) -> (Box<dyn GCWork<VM>>, Option<WorkBucketStage>) {
+        if let Some((work, bucket_is_empty, stage)) = self.pop_scheduable_work(worker) {
             if bucket_is_empty {
                 worker
                     .sender
                     .send(CoordinatorMessage::BucketDrained)
                     .unwrap();
             }
-            work
+            (work, stage)
         } else {
             self.poll_slow(worker)
-        };
-        work
+        }
     }
 
     #[cold]
-    fn poll_slow(&self, worker: &GCWorker<VM>) -> Box<dyn GCWork<VM>> {
+    fn poll_slow(&self, worker: &GCWorker<VM>) -> (Box<dyn GCWork<VM>>, Option<WorkBucketStage>) {
         debug_assert!(!worker.is_parked());
         let mut guard = self.worker_monitor.0.lock().unwrap();
         loop {
             debug_assert!(!worker.is_parked());
-            if let Some((work, bucket_is_empty)) = self.pop_scheduable_work(worker) {
+            if let Some((work, bucket_is_empty, stage)) = self.pop_scheduable_work(worker) {
                 if bucket_is_empty {
                     worker
                         .sender
                         .send(CoordinatorMessage::BucketDrained)
                         .unwrap();
                 }
-                return work;
+                return (work, stage);
             }
             // Park this worker
             worker.parked.store(true, Ordering::SeqCst);
