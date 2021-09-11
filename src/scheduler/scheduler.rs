@@ -417,6 +417,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         debug_assert!(!self.work_buckets[WorkBucketStage::Prepare].is_activated());
         debug_assert!(!self.single_threaded_work_buckets[WorkBucketStage::Prepare].is_activated());
         self.work_buckets[WorkBucketStage::Prepare].activate();
+        self.single_threaded_work_buckets[WorkBucketStage::Prepare].activate();
         let _guard = self.worker_monitor.0.lock().unwrap();
         self.worker_monitor.1.notify_all();
     }
