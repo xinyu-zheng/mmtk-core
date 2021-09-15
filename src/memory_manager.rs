@@ -412,10 +412,18 @@ pub fn num_of_workers<VM: VMBinding>(mmtk: &'static MMTK<VM>) -> usize {
 /// * `packet`: The work packet to be added.
 pub fn add_work_packet<VM: VMBinding, W: GCWork<VM>>(
     mmtk: &'static MMTK<VM>,
-    bucket: WorkBucketStage,
+    stage: WorkBucketStage,
     packet: W,
 ) {
-    mmtk.scheduler.work_buckets[bucket].add(packet)
+    mmtk.scheduler.work_buckets[stage].add(packet);
+}
+
+pub fn add_single_threaded_work_packet<VM: VMBinding, W: GCWork<VM>>(
+    mmtk: &'static MMTK<VM>,
+    stage: WorkBucketStage,
+    packet: W,
+) {
+    mmtk.scheduler.single_threaded_work_buckets[stage].add(packet);
 }
 
 /// Bulk add a number of work packets to the given work bucket. Note that this simply adds the work packets
