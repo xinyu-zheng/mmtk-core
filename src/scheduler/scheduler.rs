@@ -199,6 +199,12 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
     }
 
     fn all_buckets_empty(&self) -> bool {
+        //let a = self.work_buckets.values().all(|bucket| bucket.is_empty());
+        //let b = self
+        //    .single_threaded_work_buckets
+        //    .values()
+        //    .all(|bucket| bucket.is_empty());
+        //a && b
         self.work_buckets.values().all(|bucket| bucket.is_empty())
             && self
                 .single_threaded_work_buckets

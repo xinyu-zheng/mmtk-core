@@ -100,6 +100,14 @@ impl<VM: VMBinding> WorkBucket<VM> {
     }
     /// Test if the bucket is drained
     pub fn is_empty(&self) -> bool {
+        //let sz = self.queue.read().len();
+        //debug!(
+        //    "stage: {:?}, single: {}, len: {}, busy: {}",
+        //    self.stage(),
+        //    self.is_single_threaded(),
+        //    sz,
+        //    self.busy()
+        //);
         self.queue.read().len() == 0
     }
     pub fn is_drained(&self) -> bool {
@@ -158,12 +166,22 @@ impl<VM: VMBinding> WorkBucket<VM> {
     }
     pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, WorkBucketStage)> {
         debug_assert!(self.is_single_threaded());
+        if !self.active.load(Ordering::SeqCst) {
+            return None;
+        }
         if let Ok(false) =
             self.busy
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         {
             debug_assert!(self.busy());
-            self.queue.write().pop().map(|v| (v.work, self.stage()))
+            let work = self.queue.write().pop().map(|v| (v.work, self.stage()));
+            if let Some(_) = work {
+                work
+            } else {
+                // Unset busy if no work is popped.
+                self.be_idle();
+                work
+            }
         } else {
             None
         }
