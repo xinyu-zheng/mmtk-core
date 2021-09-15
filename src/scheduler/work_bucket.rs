@@ -158,9 +158,9 @@ impl<VM: VMBinding> WorkBucket<VM> {
     }
     pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, WorkBucketStage)> {
         debug_assert!(self.is_single_threaded());
-        if let Ok(_) = self
-            .busy
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        if let Ok(false) =
+            self.busy
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         {
             debug_assert!(self.busy());
             self.queue.write().pop().map(|v| (v.work, self.stage()))
