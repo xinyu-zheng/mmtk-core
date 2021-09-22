@@ -62,6 +62,7 @@ pub struct WorkBucket<VM: VMBinding> {
     can_open: Option<Box<dyn (Fn() -> bool) + Send>>,
     is_single_threaded: bool,
     stage: WorkBucketStage,
+    id: usize,
     busy: AtomicBool,
 }
 
@@ -72,6 +73,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
         monitor: Arc<(Mutex<()>, Condvar)>,
         is_single_threaded: bool,
         stage: WorkBucketStage,
+        id: usize,
     ) -> Self {
         Self {
             active: AtomicBool::new(active),
@@ -79,8 +81,9 @@ impl<VM: VMBinding> WorkBucket<VM> {
             monitor,
             can_open: None,
             is_single_threaded,
-            busy: AtomicBool::new(false),
             stage,
+            id,
+            busy: AtomicBool::new(false),
         }
     }
     fn notify_one_worker(&self) {
@@ -164,7 +167,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
         }
         self.queue.write().pop().map(|v| v.work)
     }
-    pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, WorkBucketStage)> {
+    pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, WorkBucketStage, usize)> {
         debug_assert!(self.is_single_threaded());
         if !self.active.load(Ordering::SeqCst) {
             return None;
@@ -174,7 +177,11 @@ impl<VM: VMBinding> WorkBucket<VM> {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         {
             debug_assert!(self.busy());
-            let work = self.queue.write().pop().map(|v| (v.work, self.stage()));
+            let work = self
+                .queue
+                .write()
+                .pop()
+                .map(|v| (v.work, self.stage(), self.id()));
             if let Some(_) = work {
                 work
             } else {
@@ -189,10 +196,17 @@ impl<VM: VMBinding> WorkBucket<VM> {
     pub fn set_open_condition(&mut self, pred: impl Fn() -> bool + Send + 'static) {
         self.can_open = Some(box pred);
     }
-    pub fn update(&self) -> bool {
+    pub fn update(&self, scheduler: &GCWorkScheduler<VM>) -> bool {
         if let Some(can_open) = self.can_open.as_ref() {
             if !self.is_activated() && can_open() {
                 self.activate();
+                debug_assert!(scheduler.single_threaded_work_buckets.as_ref().unwrap()
+                    [WorkBucketStage::Final]
+                    .iter()
+                    .all(|bucket| !bucket.is_activated()));
+                scheduler.single_threaded_work_buckets.as_ref().unwrap()[self.stage()]
+                    .iter()
+                    .for_each(|bucket| bucket.activate());
                 return true;
             }
         }
@@ -200,6 +214,9 @@ impl<VM: VMBinding> WorkBucket<VM> {
     }
     pub fn stage(&self) -> WorkBucketStage {
         self.stage
+    }
+    pub fn id(&self) -> usize {
+        self.id
     }
 }
 

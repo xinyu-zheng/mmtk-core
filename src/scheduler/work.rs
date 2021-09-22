@@ -16,10 +16,15 @@ pub trait GCWork<VM: VMBinding>: 'static + Send {
         &mut self,
         worker: &mut GCWorker<VM>,
         stage: WorkBucketStage,
+        id: usize,
         mmtk: &'static MMTK<VM>,
     ) {
         self.do_work(worker, mmtk);
-        let bucket = &worker.scheduler().single_threaded_work_buckets[stage];
+        let bucket = &worker
+            .scheduler()
+            .single_threaded_work_buckets
+            .as_ref()
+            .unwrap()[stage][id];
         bucket.be_idle();
     }
     #[inline]
@@ -35,11 +40,21 @@ pub trait GCWork<VM: VMBinding>: 'static + Send {
         &mut self,
         worker: &mut GCWorker<VM>,
         stage: WorkBucketStage,
+        id: usize,
         mmtk: &'static MMTK<VM>,
     ) {
-        debug_assert!(worker.scheduler().single_threaded_work_buckets[stage].busy());
+        debug_assert!(worker
+            .scheduler()
+            .single_threaded_work_buckets
+            .as_ref()
+            .unwrap()[stage][id]
+            .busy());
         self.do_work_with_stat(worker, mmtk);
-        let bucket = &worker.scheduler().single_threaded_work_buckets[stage];
+        let bucket = &worker
+            .scheduler()
+            .single_threaded_work_buckets
+            .as_ref()
+            .unwrap()[stage][id];
         bucket.be_idle();
     }
 }

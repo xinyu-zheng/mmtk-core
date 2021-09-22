@@ -89,6 +89,7 @@ impl<VM: VMBinding> GCWorker<VM> {
                 scheduler.worker_monitor.clone(),
                 false,
                 WorkBucketStage::Unconstrained,
+                0,
             ),
             sender,
             scheduler,
@@ -97,14 +98,6 @@ impl<VM: VMBinding> GCWorker<VM> {
             is_coordinator,
             local_work_buffer: Vec::with_capacity(LOCALLY_CACHED_WORKS),
         }
-    }
-
-    #[inline]
-    pub fn add_single_threaded_work(&mut self, stage: WorkBucketStage, work: impl GCWork<VM>) {
-        // Single-threaded work should always be added to the global buckets
-        // to avoid multiple workers working on works from a same bucket because the single-threaded property
-        // is only maintained by the bucket through giving away one work at a time.
-        self.scheduler.single_threaded_work_buckets[stage].add_with_priority(1000, box work);
     }
 
     #[inline]
@@ -167,10 +160,10 @@ impl<VM: VMBinding> GCWorker<VM> {
                 debug_assert!(self.scheduler.work_buckets[stage].is_activated());
                 work.do_work_with_stat(self, mmtk);
             }
-            let (mut work, stage) = self.scheduler().poll(self);
+            let (mut work, bucket) = self.scheduler().poll(self);
             debug_assert!(!self.is_parked());
-            if let Some(s) = stage {
-                work.do_single_threaded_work_with_stat(self, s, mmtk);
+            if let Some((stage, id)) = bucket {
+                work.do_single_threaded_work_with_stat(self, stage, id, mmtk);
             } else {
                 work.do_work_with_stat(self, mmtk);
             }
