@@ -29,6 +29,7 @@ pub trait GCWork<VM: VMBinding>: 'static + Send {
     }
     #[inline]
     fn do_work_with_stat(&mut self, worker: &mut GCWorker<VM>, mmtk: &'static MMTK<VM>) {
+        debug!("{}", std::any::type_name::<Self>());
         let stat = worker
             .stat
             .measure_work(TypeId::of::<Self>(), type_name::<Self>(), mmtk);
