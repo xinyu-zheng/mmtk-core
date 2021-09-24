@@ -403,6 +403,10 @@ pub fn num_of_workers<VM: VMBinding>(mmtk: &'static MMTK<VM>) -> usize {
     mmtk.scheduler.num_workers()
 }
 
+pub fn hash_mask<VM: VMBinding>(mmtk: &'static MMTK<VM>) -> usize {
+    mmtk.scheduler.hash_mask()
+}
+
 /// Add a work packet to the given work bucket. Note that this simply adds the work packet to the given
 /// work bucket, and the scheduler will decide when to execute the work packet.
 ///

@@ -19,8 +19,8 @@ pub enum CoordinatorMessage<VM: VMBinding> {
 
 pub struct GCWorkScheduler<VM: VMBinding> {
     pub work_buckets: EnumMap<WorkBucketStage, WorkBucket<VM>>,
-    /// Number of single-threaded Closure buckets.
-    pub colors: usize,
+    // Mask for hashing into single-threaded work buckets.
+    pub hash_mask: usize,
     pub single_threaded_work_buckets: Option<EnumMap<WorkBucketStage, Vec<WorkBucket<VM>>>>,
     /// Work for the coordinator thread
     pub coordinator_work: WorkBucket<VM>,
@@ -69,7 +69,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 WorkBucketStage::Release => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::Release, 0),
                 WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), false, WorkBucketStage::Final, 0),
             },
-            colors: 0,
+            hash_mask: 0,
             single_threaded_work_buckets: None,
             coordinator_work: WorkBucket::new(
                 true,
@@ -94,6 +94,11 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         self.worker_group.as_ref().unwrap().worker_count()
     }
 
+    #[inline]
+    pub fn hash_mask(&self) -> usize {
+        self.hash_mask
+    }
+
     pub fn initialize(
         self: &'static Arc<Self>,
         num_workers: usize,
@@ -110,17 +115,15 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         let mut self_mut = self.clone();
         let self_mut = unsafe { Arc::get_mut_unchecked(&mut self_mut) };
 
-        // Let colors be power of 2 so that hashing can rely on bits pattern of Address.
-        let mut colors = 1;
-        while colors < num_workers {
-            colors *= 2;
+        let mut hash_mask = 0;
+        while hash_mask + 1 < num_workers {
+            hash_mask = hash_mask * 2 + 1;
         }
-        self_mut.colors = colors;
-        debug_assert!(self.colors >= num_workers && self.colors < 2 * num_workers);
+        self_mut.hash_mask = hash_mask;
         self_mut.single_threaded_work_buckets = Some(enum_map! {
             WorkBucketStage::Unconstrained => vec![WorkBucket::new(true, self.worker_monitor.clone(), true, WorkBucketStage::Unconstrained, 0)],
             WorkBucketStage::Prepare => vec![WorkBucket::new(false, self.worker_monitor.clone(), true, WorkBucketStage::Prepare, 0)],
-            WorkBucketStage::Closure => (0..self.colors).map(|id| WorkBucket::new(false, self.worker_monitor.clone(), true, WorkBucketStage::Closure, id)).collect(),
+            WorkBucketStage::Closure => (0..self.hash_mask + 1).map(|id| WorkBucket::new(false, self.worker_monitor.clone(), true, WorkBucketStage::Closure, id)).collect(),
             WorkBucketStage::RefClosure => vec![WorkBucket::new(false, self.worker_monitor.clone(), true, WorkBucketStage::RefClosure, 0)],
             WorkBucketStage::RefForwarding => vec![WorkBucket::new(false, self.worker_monitor.clone(), true, WorkBucketStage::RefForwarding, 0)],
             WorkBucketStage::Release => vec![WorkBucket::new(false, self.worker_monitor.clone(), true, WorkBucketStage::Release, 0)],
