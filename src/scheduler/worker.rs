@@ -101,6 +101,20 @@ impl<VM: VMBinding> GCWorker<VM> {
     }
 
     #[inline]
+    pub fn add_single_threaded_work(
+        &mut self,
+        stage: WorkBucketStage,
+        id: usize,
+        work: impl GCWork<VM>,
+    ) {
+        self.scheduler
+            .single_threaded_work_buckets
+            .as_ref()
+            .unwrap()[stage][id]
+            .add_with_priority(1000, box work);
+    }
+
+    #[inline]
     pub fn add_work(&mut self, stage: WorkBucketStage, work: impl GCWork<VM>) {
         if !self.scheduler().work_buckets[stage].is_activated() {
             self.scheduler.work_buckets[stage].add_with_priority(1000, box work);
