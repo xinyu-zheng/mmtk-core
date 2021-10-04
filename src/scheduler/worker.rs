@@ -2,9 +2,10 @@ use super::stat::WorkerLocalStat;
 use super::work_bucket::*;
 use super::*;
 use crate::mmtk::MMTK;
-use crate::util::opaque_pointer::*;
+use crate::util::{opaque_pointer::*, Address};
 use crate::vm::{Collection, VMBinding};
 use std::ffi::c_void;
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Weak};
@@ -65,6 +66,7 @@ pub struct GCWorker<VM: VMBinding> {
     mmtk: Option<&'static MMTK<VM>>,
     is_coordinator: bool,
     local_work_buffer: Vec<(WorkBucketStage, Box<dyn GCWork<VM>>)>,
+    edges: [Vec<Address>; 32],
 }
 
 unsafe impl<VM: VMBinding> Sync for GCWorker<VM> {}
@@ -97,6 +99,48 @@ impl<VM: VMBinding> GCWorker<VM> {
             mmtk: None,
             is_coordinator,
             local_work_buffer: Vec::with_capacity(LOCALLY_CACHED_WORKS),
+            edges: Default::default(),
+        }
+    }
+
+    #[inline]
+    pub fn add_edges<E: ProcessEdgesWork<VM = VM>>(
+        &mut self,
+        edges: Vec<Address>,
+        mmtk: &'static MMTK<VM>,
+    ) {
+        let mask = self.scheduler.hash_mask();
+        for edge in edges {
+            let id = edge & mask;
+            self.edges[id].push(edge);
+            if self.edges[id].len() == E::CAPACITY {
+                let mut new_edges = Vec::new();
+                mem::swap(&mut new_edges, &mut self.edges[id]);
+                self.add_single_threaded_work(
+                    WorkBucketStage::Closure,
+                    id,
+                    E::new(new_edges, false, mmtk),
+                )
+            }
+        }
+    }
+
+    #[inline]
+    pub fn add_edges_and_flush<E: ProcessEdgesWork<VM = VM>>(
+        &mut self,
+        edges: Vec<Address>,
+        mmtk: &'static MMTK<VM>,
+    ) {
+        self.add_edges::<E>(edges, mmtk);
+        let mask = self.scheduler.hash_mask();
+        for id in 0..=mask {
+            let mut new_edges = Vec::new();
+            mem::swap(&mut new_edges, &mut self.edges[id]);
+            self.add_single_threaded_work(
+                WorkBucketStage::Closure,
+                id,
+                E::new(new_edges, false, mmtk),
+            )
         }
     }
 
