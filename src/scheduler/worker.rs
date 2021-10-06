@@ -64,7 +64,7 @@ pub struct GCWorker<VM: VMBinding> {
     pub stat: WorkerLocalStat<VM>,
     mmtk: Option<&'static MMTK<VM>>,
     is_coordinator: bool,
-    local_work_buffer: Vec<(WorkBucketStage, Box<dyn GCWork<VM>>)>,
+    local_work_buffer: Vec<(WorkBucketStage, Option<usize>, Box<dyn GCWork<VM>>)>,
 }
 
 unsafe impl<VM: VMBinding> Sync for GCWorker<VM> {}
@@ -87,9 +87,8 @@ impl<VM: VMBinding> GCWorker<VM> {
             local_work_bucket: WorkBucket::new(
                 true,
                 scheduler.worker_monitor.clone(),
-                false,
                 WorkBucketStage::Unconstrained,
-                0,
+                None,
             ),
             sender,
             scheduler,
@@ -100,11 +99,23 @@ impl<VM: VMBinding> GCWorker<VM> {
         }
     }
 
-    //#[inline]
-    //pub fn add_single_threaded_work(&mut self, id: usize, work: impl GCWork<VM>) {
-    //    //println!("w{}: {}", self.ordinal, id);
-    //    self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
-    //}
+    #[inline]
+    pub fn add_single_threaded_work(&mut self, id: usize, work: impl GCWork<VM>) {
+        //println!("w{}: {}", self.ordinal, id);
+        if !self.scheduler().work_buckets[WorkBucketStage::Closure].is_activated() {
+            self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
+            return;
+        }
+        if self.local_work_buffer.len() < LOCALLY_CACHED_WORKS
+            && self.scheduler().single_threaded_work_buckets[id].compare_exchange_busy()
+                == Ok(false)
+        {
+            self.local_work_buffer
+                .push((WorkBucketStage::Closure, Some(id), box work));
+        } else {
+            self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
+        }
+    }
 
     #[inline]
     pub fn add_work(&mut self, stage: WorkBucketStage, work: impl GCWork<VM>) {
@@ -112,7 +123,7 @@ impl<VM: VMBinding> GCWorker<VM> {
             self.scheduler.work_buckets[stage].add_with_priority(1000, box work);
             return;
         }
-        self.local_work_buffer.push((stage, box work));
+        self.local_work_buffer.push((stage, None, box work));
         if self.local_work_buffer.len() > LOCALLY_CACHED_WORKS {
             self.flush();
         }
@@ -122,7 +133,7 @@ impl<VM: VMBinding> GCWorker<VM> {
     fn flush(&mut self) {
         let mut buffer = Vec::with_capacity(LOCALLY_CACHED_WORKS);
         std::mem::swap(&mut buffer, &mut self.local_work_buffer);
-        for (bucket, work) in buffer {
+        for (bucket, _, work) in buffer {
             self.scheduler.work_buckets[bucket].add_with_priority(1000, work);
         }
     }
@@ -162,13 +173,17 @@ impl<VM: VMBinding> GCWorker<VM> {
         self.mmtk = Some(mmtk);
         self.parked.store(false, Ordering::SeqCst);
         loop {
-            while let Some((stage, mut work)) = self.local_work_buffer.pop() {
+            while let Some((stage, single_threaded_id, mut work)) = self.local_work_buffer.pop() {
                 debug_assert!(self.scheduler.work_buckets[stage].is_activated());
-                work.do_work_with_stat(self, mmtk);
+                if let Some(id) = single_threaded_id {
+                    work.do_single_threaded_work_with_stat(self, id, mmtk);
+                } else {
+                    work.do_work_with_stat(self, mmtk);
+                }
             }
-            let (mut work, bucket) = self.scheduler().poll(self);
+            let (mut work, single_threaded_id) = self.scheduler().poll(self);
             debug_assert!(!self.is_parked());
-            if let Some(id) = bucket {
+            if let Some(id) = single_threaded_id {
                 work.do_single_threaded_work_with_stat(self, id, mmtk);
             } else {
                 work.do_work_with_stat(self, mmtk);

@@ -60,9 +60,8 @@ pub struct WorkBucket<VM: VMBinding> {
     queue: RwLock<BinaryHeap<PrioritizedWork<VM>>>,
     monitor: Arc<(Mutex<()>, Condvar)>,
     can_open: Option<Box<dyn (Fn() -> bool) + Send>>,
-    is_single_threaded: bool,
     stage: WorkBucketStage,
-    id: usize,
+    single_threaded_id: Option<usize>,
     busy: AtomicBool,
 }
 
@@ -71,18 +70,16 @@ impl<VM: VMBinding> WorkBucket<VM> {
     pub fn new(
         active: bool,
         monitor: Arc<(Mutex<()>, Condvar)>,
-        is_single_threaded: bool,
         stage: WorkBucketStage,
-        id: usize,
+        single_threaded_id: Option<usize>,
     ) -> Self {
         Self {
             active: AtomicBool::new(active),
             queue: Default::default(),
             monitor,
             can_open: None,
-            is_single_threaded,
             stage,
-            id,
+            single_threaded_id,
             busy: AtomicBool::new(false),
         }
     }
@@ -147,9 +144,6 @@ impl<VM: VMBinding> WorkBucket<VM> {
     pub fn bulk_add(&self, work_vec: Vec<Box<dyn GCWork<VM>>>) {
         self.bulk_add_with_priority(1000, work_vec)
     }
-    pub fn is_single_threaded(&self) -> bool {
-        self.is_single_threaded
-    }
     pub fn busy(&self) -> bool {
         self.busy.load(Ordering::SeqCst)
     }
@@ -159,23 +153,22 @@ impl<VM: VMBinding> WorkBucket<VM> {
     pub fn be_idle(&self) {
         self.busy.store(false, Ordering::SeqCst);
     }
+    pub fn compare_exchange_busy(&self) -> Result<bool, bool> {
+        self.busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+    }
     /// Get a work packet (with the greatest priority) from this bucket
     pub fn poll(&self) -> Option<Box<dyn GCWork<VM>>> {
-        debug_assert!(!self.is_single_threaded());
         if !self.active.load(Ordering::SeqCst) {
             return None;
         }
         self.queue.write().pop().map(|v| v.work)
     }
     pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, usize)> {
-        debug_assert!(self.is_single_threaded());
         if !self.active.load(Ordering::SeqCst) {
             return None;
         }
-        if let Ok(false) =
-            self.busy
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        {
+        if self.compare_exchange_busy() == Ok(false) {
             debug_assert!(self.busy());
             let work = self.queue.write().pop().map(|v| (v.work, self.id()));
             if let Some(_) = work {
@@ -211,7 +204,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
         self.stage
     }
     pub fn id(&self) -> usize {
-        self.id
+        self.single_threaded_id.unwrap()
     }
     pub fn number_of_works(&self) -> usize {
         self.queue.read().len()
