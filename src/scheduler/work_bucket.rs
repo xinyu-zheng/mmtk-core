@@ -167,7 +167,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
         }
         self.queue.write().pop().map(|v| v.work)
     }
-    pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, WorkBucketStage, usize)> {
+    pub fn poll_single_threaded(&self) -> Option<(Box<dyn GCWork<VM>>, usize)> {
         debug_assert!(self.is_single_threaded());
         if !self.active.load(Ordering::SeqCst) {
             return None;
@@ -177,11 +177,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         {
             debug_assert!(self.busy());
-            let work = self
-                .queue
-                .write()
-                .pop()
-                .map(|v| (v.work, self.stage(), self.id()));
+            let work = self.queue.write().pop().map(|v| (v.work, self.id()));
             if let Some(_) = work {
                 work
             } else {
@@ -200,13 +196,12 @@ impl<VM: VMBinding> WorkBucket<VM> {
         if let Some(can_open) = self.can_open.as_ref() {
             if !self.is_activated() && can_open() {
                 self.activate();
-                debug_assert!(scheduler.single_threaded_work_buckets.as_ref().unwrap()
-                    [WorkBucketStage::Final]
-                    .iter()
-                    .all(|bucket| !bucket.is_activated()));
-                scheduler.single_threaded_work_buckets.as_ref().unwrap()[self.stage()]
-                    .iter()
-                    .for_each(|bucket| bucket.activate());
+                if self.stage() == WorkBucketStage::Closure {
+                    scheduler
+                        .single_threaded_work_buckets
+                        .iter()
+                        .for_each(|bucket| bucket.activate());
+                }
                 return true;
             }
         }
@@ -217,6 +212,9 @@ impl<VM: VMBinding> WorkBucket<VM> {
     }
     pub fn id(&self) -> usize {
         self.id
+    }
+    pub fn number_of_works(&self) -> usize {
+        self.queue.read().len()
     }
 }
 

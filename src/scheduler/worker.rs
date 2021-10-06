@@ -100,19 +100,11 @@ impl<VM: VMBinding> GCWorker<VM> {
         }
     }
 
-    #[inline]
-    pub fn add_single_threaded_work(
-        &mut self,
-        stage: WorkBucketStage,
-        id: usize,
-        work: impl GCWork<VM>,
-    ) {
-        self.scheduler
-            .single_threaded_work_buckets
-            .as_ref()
-            .unwrap()[stage][id]
-            .add_with_priority(1000, box work);
-    }
+    //#[inline]
+    //pub fn add_single_threaded_work(&mut self, id: usize, work: impl GCWork<VM>) {
+    //    //println!("w{}: {}", self.ordinal, id);
+    //    self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
+    //}
 
     #[inline]
     pub fn add_work(&mut self, stage: WorkBucketStage, work: impl GCWork<VM>) {
@@ -176,8 +168,8 @@ impl<VM: VMBinding> GCWorker<VM> {
             }
             let (mut work, bucket) = self.scheduler().poll(self);
             debug_assert!(!self.is_parked());
-            if let Some((stage, id)) = bucket {
-                work.do_single_threaded_work_with_stat(self, stage, id, mmtk);
+            if let Some(id) = bucket {
+                work.do_single_threaded_work_with_stat(self, id, mmtk);
             } else {
                 work.do_work_with_stat(self, mmtk);
             }

@@ -64,6 +64,7 @@ extern crate crossbeam_deque;
 extern crate num_cpus;
 #[macro_use]
 extern crate downcast_rs;
+//extern crate rand;
 
 mod mmtk;
 pub(crate) use mmtk::MMAPPER;
