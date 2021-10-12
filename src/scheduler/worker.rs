@@ -2,9 +2,11 @@ use super::stat::WorkerLocalStat;
 use super::work_bucket::*;
 use super::*;
 use crate::mmtk::MMTK;
-use crate::util::opaque_pointer::*;
+use crate::plan::semispace::global::SSProcessEdges;
+use crate::util::{opaque_pointer::*, Address};
 use crate::vm::{Collection, VMBinding};
 use std::ffi::c_void;
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Weak};
@@ -64,7 +66,8 @@ pub struct GCWorker<VM: VMBinding> {
     pub stat: WorkerLocalStat<VM>,
     mmtk: Option<&'static MMTK<VM>>,
     is_coordinator: bool,
-    local_work_buffer: Vec<(WorkBucketStage, Option<usize>, Box<dyn GCWork<VM>>)>,
+    pub local_work_buffer: Vec<(WorkBucketStage, Option<usize>, Box<dyn GCWork<VM>>)>,
+    pub edges: [Vec<Address>; 2],
 }
 
 unsafe impl<VM: VMBinding> Sync for GCWorker<VM> {}
@@ -96,25 +99,66 @@ impl<VM: VMBinding> GCWorker<VM> {
             mmtk: None,
             is_coordinator,
             local_work_buffer: Vec::with_capacity(LOCALLY_CACHED_WORKS),
+            edges: Default::default(),
         }
+    }
+
+    #[inline]
+    pub fn add_edges<E: ProcessEdgesWork<VM = VM>>(
+        &mut self,
+        edges: Vec<Address>,
+        mmtk: &'static MMTK<VM>,
+    ) {
+        let mask = self.scheduler.hash_mask();
+        for edge in edges {
+            let id = edge & mask;
+            self.edges[id].push(edge);
+            if self.edges[id].len() == E::CAPACITY {
+                let mut new_edges = Vec::new();
+                mem::swap(&mut new_edges, &mut self.edges[id]);
+                self.add_single_threaded_work(id, E::new(new_edges, false, mmtk))
+            }
+        }
+    }
+
+    #[inline]
+    pub fn flush_edges(&mut self, mmtk: &'static MMTK<VM>) -> bool {
+        println!("[flush]");
+        let mut added = false;
+        let mask = self.scheduler.hash_mask();
+        for id in 0..=mask {
+            println!("[id] {}", id);
+            if !self.edges[id].is_empty() {
+                added = true;
+                let mut new_edges = Vec::new();
+                mem::swap(&mut new_edges, &mut self.edges[id]);
+                self.add_single_threaded_work(id, SSProcessEdges::<VM>::new(new_edges, false, mmtk))
+            }
+        }
+        println!("[added] {}", added);
+        return added;
     }
 
     #[inline]
     pub fn add_single_threaded_work(&mut self, id: usize, work: impl GCWork<VM>) {
         //println!("w{}: {}", self.ordinal, id);
-        if !self.scheduler().work_buckets[WorkBucketStage::Closure].is_activated() {
-            self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
-            return;
-        }
-        if self.local_work_buffer.len() < LOCALLY_CACHED_WORKS
-            && self.scheduler().single_threaded_work_buckets[id].compare_exchange_busy()
-                == Ok(false)
-        {
-            self.local_work_buffer
-                .push((WorkBucketStage::Closure, Some(id), box work));
-        } else {
-            self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
-        }
+        self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
+        //if !self.scheduler().work_buckets[WorkBucketStage::Closure].is_activated() {
+        //    println!("[inactive]");
+        //    self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
+        //    return;
+        //}
+        //if self.local_work_buffer.len() < LOCALLY_CACHED_WORKS
+        //    && self.scheduler().single_threaded_work_buckets[id].compare_exchange_busy()
+        //        == Ok(false)
+        //{
+        //    debug_assert!(self.scheduler().single_threaded_work_buckets[id].busy());
+        //    self.local_work_buffer
+        //        .push((WorkBucketStage::Closure, Some(id), box work));
+        //    println!("[add local]");
+        //} else {
+        //    self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
+        //}
     }
 
     #[inline]
@@ -173,6 +217,7 @@ impl<VM: VMBinding> GCWorker<VM> {
         self.mmtk = Some(mmtk);
         self.parked.store(false, Ordering::SeqCst);
         loop {
+            println!("[local len] {}", self.local_work_buffer.len());
             while let Some((stage, single_threaded_id, mut work)) = self.local_work_buffer.pop() {
                 debug_assert!(self.scheduler.work_buckets[stage].is_activated());
                 if let Some(id) = single_threaded_id {
@@ -181,7 +226,8 @@ impl<VM: VMBinding> GCWorker<VM> {
                     work.do_work_with_stat(self, mmtk);
                 }
             }
-            let (mut work, single_threaded_id) = self.scheduler().poll(self);
+            let scheduler = self.scheduler.clone();
+            let (mut work, single_threaded_id) = scheduler.poll(self);
             debug_assert!(!self.is_parked());
             if let Some(id) = single_threaded_id {
                 work.do_single_threaded_work_with_stat(self, id, mmtk);

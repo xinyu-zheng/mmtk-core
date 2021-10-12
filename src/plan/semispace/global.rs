@@ -1,4 +1,4 @@
-use super::gc_work::{SSCopyContext, SSProcessEdges};
+pub use super::gc_work::{SSCopyContext, SSProcessEdges};
 use crate::mmtk::MMTK;
 use crate::plan::global::CommonPlan;
 use crate::plan::global::GcStatus;

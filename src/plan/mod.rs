@@ -45,7 +45,7 @@ mod immix;
 mod marksweep;
 mod nogc;
 mod pageprotect;
-mod semispace;
+pub mod semispace;
 
 // Expose plan constraints as public. Though a binding can get them from plan.constraints(),
 // it is possible for performance reasons that they want the constraints as constants.
