@@ -107,8 +107,7 @@ impl<VM: VMBinding> GCWorker<VM> {
             return;
         }
         if self.local_work_buffer.len() < LOCALLY_CACHED_WORKS
-            && self.scheduler().single_threaded_work_buckets[id].compare_exchange_busy()
-                == Ok(false)
+            && !self.scheduler().single_threaded_work_buckets[id].busy()
         {
             self.local_work_buffer
                 .push((WorkBucketStage::Closure, Some(id), box work));

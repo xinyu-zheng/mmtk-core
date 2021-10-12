@@ -2,6 +2,7 @@ use super::*;
 use crate::vm::VMBinding;
 use enum_map::Enum;
 use spin::RwLock;
+use std::cell::Cell;
 use std::cmp;
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -54,6 +55,8 @@ impl<VM: VMBinding> PartialOrd for PrioritizedWork<VM> {
     }
 }
 
+unsafe impl<VM: VMBinding> Send for WorkBucket<VM> {}
+
 pub struct WorkBucket<VM: VMBinding> {
     active: AtomicBool,
     /// A priority queue
@@ -62,7 +65,7 @@ pub struct WorkBucket<VM: VMBinding> {
     can_open: Option<Box<dyn (Fn() -> bool) + Send>>,
     stage: WorkBucketStage,
     single_threaded_id: Option<usize>,
-    busy: AtomicBool,
+    busy: Cell<bool>,
 }
 
 impl<VM: VMBinding> WorkBucket<VM> {
@@ -80,7 +83,7 @@ impl<VM: VMBinding> WorkBucket<VM> {
             can_open: None,
             stage,
             single_threaded_id,
-            busy: AtomicBool::new(false),
+            busy: Cell::new(false),
         }
     }
     fn notify_one_worker(&self) {
@@ -145,17 +148,13 @@ impl<VM: VMBinding> WorkBucket<VM> {
         self.bulk_add_with_priority(1000, work_vec)
     }
     pub fn busy(&self) -> bool {
-        self.busy.load(Ordering::SeqCst)
+        self.busy.get()
     }
     pub fn be_busy(&self) {
-        self.busy.store(true, Ordering::SeqCst);
+        self.busy.set(true);
     }
     pub fn be_idle(&self) {
-        self.busy.store(false, Ordering::SeqCst);
-    }
-    pub fn compare_exchange_busy(&self) -> Result<bool, bool> {
-        self.busy
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        self.busy.set(false);
     }
     /// Get a work packet (with the greatest priority) from this bucket
     pub fn poll(&self) -> Option<Box<dyn GCWork<VM>>> {
@@ -168,7 +167,8 @@ impl<VM: VMBinding> WorkBucket<VM> {
         if !self.active.load(Ordering::SeqCst) {
             return None;
         }
-        if self.compare_exchange_busy() == Ok(false) {
+        if !self.busy() {
+            self.be_busy();
             debug_assert!(self.busy());
             let work = self.queue.write().pop().map(|v| (v.work, self.id()));
             if let Some(_) = work {
