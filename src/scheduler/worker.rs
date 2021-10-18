@@ -65,6 +65,7 @@ pub struct GCWorker<VM: VMBinding> {
     mmtk: Option<&'static MMTK<VM>>,
     is_coordinator: bool,
     local_work_buffer: Vec<(WorkBucketStage, Option<usize>, Box<dyn GCWork<VM>>)>,
+    id: Option<usize>,
 }
 
 unsafe impl<VM: VMBinding> Sync for GCWorker<VM> {}
@@ -96,6 +97,7 @@ impl<VM: VMBinding> GCWorker<VM> {
             mmtk: None,
             is_coordinator,
             local_work_buffer: Vec::with_capacity(LOCALLY_CACHED_WORKS),
+            id: None,
         }
     }
 
@@ -106,7 +108,7 @@ impl<VM: VMBinding> GCWorker<VM> {
             self.scheduler.single_threaded_work_buckets[id].add_with_priority(1000, box work);
             return;
         }
-        if self.local_work_buffer.len() < LOCALLY_CACHED_WORKS {
+        if self.id == Some(id) && self.local_work_buffer.len() < LOCALLY_CACHED_WORKS {
             self.local_work_buffer
                 .push((WorkBucketStage::Closure, Some(id), box work));
         } else {
@@ -174,6 +176,11 @@ impl<VM: VMBinding> GCWorker<VM> {
                 debug_assert!(self.scheduler.work_buckets[stage].is_activated());
                 if let Some(id) = single_threaded_id {
                     work.do_single_threaded_work_with_stat(self, id, mmtk);
+                    if self.local_work_buffer.is_empty() {
+                        let bucket = &self.scheduler().single_threaded_work_buckets[id];
+                        bucket.be_idle();
+                        self.id = None;
+                    }
                 } else {
                     work.do_work_with_stat(self, mmtk);
                 }
@@ -181,7 +188,13 @@ impl<VM: VMBinding> GCWorker<VM> {
             let (mut work, single_threaded_id) = self.scheduler().poll(self);
             debug_assert!(!self.is_parked());
             if let Some(id) = single_threaded_id {
+                self.id = Some(id);
                 work.do_single_threaded_work_with_stat(self, id, mmtk);
+                if self.local_work_buffer.is_empty() {
+                    let bucket = &self.scheduler().single_threaded_work_buckets[id];
+                    bucket.be_idle();
+                    self.id = None;
+                }
             } else {
                 work.do_work_with_stat(self, mmtk);
             }

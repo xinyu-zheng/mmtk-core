@@ -40,7 +40,5 @@ pub trait GCWork<VM: VMBinding>: 'static + Send {
     ) {
         debug_assert!(worker.scheduler().single_threaded_work_buckets[id].busy());
         self.do_work_with_stat(worker, mmtk);
-        let bucket = &worker.scheduler().single_threaded_work_buckets[id];
-        bucket.be_idle();
     }
 }
