@@ -23,7 +23,7 @@ pub struct GCWorkScheduler<VM: VMBinding> {
     pub work_buckets: EnumMap<WorkBucketStage, WorkBucket<VM>>,
     // Mask for hashing into single-threaded work buckets.
     pub hash_mask: usize,
-    pub single_threaded_work_buckets: [WorkBucket<VM>; 1],
+    pub single_threaded_work_buckets: [WorkBucket<VM>; 2],
     /// Work for the coordinator thread
     pub coordinator_work: WorkBucket<VM>,
     /// workers
@@ -72,12 +72,20 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 WorkBucketStage::Final => WorkBucket::new(false, worker_monitor.clone(), WorkBucketStage::Final, None),
             },
             hash_mask: 0,
-            single_threaded_work_buckets: [WorkBucket::new(
-                false,
-                worker_monitor.clone(),
-                WorkBucketStage::Closure,
-                Some(0),
-            )],
+            single_threaded_work_buckets: [
+                WorkBucket::new(
+                    false,
+                    worker_monitor.clone(),
+                    WorkBucketStage::Closure,
+                    Some(0),
+                ),
+                WorkBucket::new(
+                    false,
+                    worker_monitor.clone(),
+                    WorkBucketStage::Closure,
+                    Some(1),
+                ),
+            ],
             coordinator_work: WorkBucket::new(
                 true,
                 worker_monitor.clone(),
