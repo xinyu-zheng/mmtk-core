@@ -3,6 +3,7 @@ use super::work_bucket::*;
 use super::*;
 use crate::mmtk::MMTK;
 use crate::plan::semispace::global::SSProcessEdges;
+use crate::scheduler::work_bucket::PrioritizedWork;
 use crate::util::{opaque_pointer::*, Address};
 use crate::vm::{Collection, VMBinding};
 use std::ffi::c_void;
@@ -123,19 +124,25 @@ impl<VM: VMBinding> GCWorker<VM> {
 
     #[inline]
     pub fn flush_edges(&mut self, mmtk: &'static MMTK<VM>) -> bool {
-        println!("[flush]");
+        //println!("[flush]");
         let mut added = false;
         let mask = self.scheduler.hash_mask();
         for id in 0..=mask {
-            println!("[id] {}", id);
+            //println!("[id] {}", id);
             if !self.edges[id].is_empty() {
                 added = true;
                 let mut new_edges = Vec::new();
                 mem::swap(&mut new_edges, &mut self.edges[id]);
-                self.add_single_threaded_work(id, SSProcessEdges::<VM>::new(new_edges, false, mmtk))
+                self.scheduler.single_threaded_work_buckets[id]
+                    .queue
+                    .write()
+                    .push(PrioritizedWork::new(
+                        1000,
+                        box SSProcessEdges::<VM>::new(new_edges, false, mmtk),
+                    ));
             }
         }
-        println!("[added] {}", added);
+        //println!("[added] {}", added);
         return added;
     }
 
@@ -217,7 +224,7 @@ impl<VM: VMBinding> GCWorker<VM> {
         self.mmtk = Some(mmtk);
         self.parked.store(false, Ordering::SeqCst);
         loop {
-            println!("[local len] {}", self.local_work_buffer.len());
+            //println!("[local len] {}", self.local_work_buffer.len());
             while let Some((stage, single_threaded_id, mut work)) = self.local_work_buffer.pop() {
                 debug_assert!(self.scheduler.work_buckets[stage].is_activated());
                 if let Some(id) = single_threaded_id {

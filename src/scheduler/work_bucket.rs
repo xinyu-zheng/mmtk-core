@@ -18,7 +18,7 @@ impl WorkUID {
     }
 }
 
-struct PrioritizedWork<VM: VMBinding> {
+pub struct PrioritizedWork<VM: VMBinding> {
     priority: usize,
     work_uid: WorkUID,
     work: Box<dyn GCWork<VM>>,
@@ -57,7 +57,7 @@ impl<VM: VMBinding> PartialOrd for PrioritizedWork<VM> {
 pub struct WorkBucket<VM: VMBinding> {
     active: AtomicBool,
     /// A priority queue
-    queue: RwLock<BinaryHeap<PrioritizedWork<VM>>>,
+    pub queue: RwLock<BinaryHeap<PrioritizedWork<VM>>>,
     monitor: Arc<(Mutex<()>, Condvar)>,
     can_open: Option<Box<dyn (Fn() -> bool) + Send>>,
     stage: WorkBucketStage,

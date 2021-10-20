@@ -343,7 +343,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
         worker: &mut GCWorker<VM>,
     ) -> Option<(Box<dyn GCWork<VM>>, bool, Option<usize>)> {
         //worker.flush_edges(self.mmtk.unwrap());
-        println!("[pop]");
+        //println!("[pop]");
         if let Some(work) = worker.local_work_bucket.poll() {
             return Some((work, worker.local_work_bucket.is_empty(), None));
         }
@@ -352,20 +352,20 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 return Some((work, work_bucket.is_empty(), None));
             }
         }
-        let buckets = &self.single_threaded_work_buckets;
-        println!(
-            "[before popping single] b[0]: {}, b[1]: {}, {}",
-            buckets[0].number_of_works(),
-            buckets[1].number_of_works(),
-            buckets[0].busy()
-        );
+        //let buckets = &self.single_threaded_work_buckets;
+        //println!(
+        //    "[before popping single] b[0]: {}, b[1]: {}, {}",
+        //    buckets[0].number_of_works(),
+        //    buckets[1].number_of_works(),
+        //    buckets[0].busy()
+        //);
         for single_threaded_work_bucket in self.single_threaded_work_buckets.iter() {
             //let mut order: Vec<usize> = (worker.ordinal..=worker.ordinal).collect();
             //order.shuffle(&mut thread_rng());
             if let Some((work, id)) = single_threaded_work_bucket.poll_single_threaded() {
-                println!("[polled] worker: {}, id: {}", worker.ordinal, id);
+                //println!("[polled] worker: {}, id: {}", worker.ordinal, id);
                 if self.single_threaded_work_buckets_are_empty() {
-                    println!("[flush empty]");
+                    //println!("[flush empty]");
                     worker.flush_edges(self.mmtk.unwrap());
                     return Some((
                         work,
@@ -377,25 +377,24 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 }
             }
         }
-        let buckets = &self.single_threaded_work_buckets;
-        println!(
-            "[None] b[0]: {}, b[1]: {}",
-            buckets[0].number_of_works(),
-            buckets[1].number_of_works()
-        );
+        //let buckets = &self.single_threaded_work_buckets;
+        //println!(
+        //    "[None] b[0]: {}, b[1]: {}",
+        //    buckets[0].number_of_works(),
+        //    buckets[1].number_of_works()
+        //);
         None
     }
 
     /// Get a scheduable work (with its stage and id if it's single-threaded). Called by workers
     #[inline]
     pub fn poll(&self, worker: &mut GCWorker<VM>) -> (Box<dyn GCWork<VM>>, Option<usize>) {
-        println!("[poll]");
+        //println!("[poll]");
         if let Some((work, bucket_empty, id)) = self.pop_scheduable_work(worker) {
             if bucket_empty {
-                //println!("true");
-                if let Some(_) = id {
-                    println!("[drain]");
-                }
+                //if let Some(_) = id {
+                //    println!("[drain]");
+                //}
                 worker
                     .sender
                     .send(CoordinatorMessage::BucketDrained)
@@ -409,16 +408,16 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
 
     #[cold]
     fn poll_slow(&self, worker: &mut GCWorker<VM>) -> (Box<dyn GCWork<VM>>, Option<usize>) {
-        println!("[poll slow]");
+        //println!("[poll slow]");
         debug_assert!(!worker.is_parked());
         let mut guard = self.worker_monitor.0.lock().unwrap();
         loop {
             debug_assert!(!worker.is_parked());
             if let Some((work, bucket_empty, id)) = self.pop_scheduable_work(worker) {
                 if bucket_empty {
-                    if let Some(_) = id {
-                        println!("[drain]");
-                    }
+                    //if let Some(_) = id {
+                    //    println!("[drain]");
+                    //}
                     worker
                         .sender
                         .send(CoordinatorMessage::BucketDrained)
@@ -427,13 +426,13 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
                 return (work, id);
             }
             if worker.flush_edges(self.mmtk.unwrap()) {
-                println!("[flush None ok]");
+                //println!("[flush None ok]");
                 continue;
             }
-            println!("[flush None fail]");
+            //println!("[flush None fail]");
             // Park this worker
             worker.parked.store(true, Ordering::SeqCst);
-            println!("[park] worker: {}", worker.ordinal);
+            //println!("[park] worker: {}", worker.ordinal);
             if self.worker_group().all_parked() {
                 worker
                     .sender
@@ -444,7 +443,7 @@ impl<VM: VMBinding> GCWorkScheduler<VM> {
             guard = self.worker_monitor.1.wait(guard).unwrap();
             // Unpark this worker
             worker.parked.store(false, Ordering::SeqCst);
-            println!("[wake] worker: {}", worker.ordinal);
+            //println!("[wake] worker: {}", worker.ordinal);
         }
     }
 
